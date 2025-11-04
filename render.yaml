@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: onlylabs-reels-app
+    env: node
+    buildCommand: yarn install
+    startCommand: yarn start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
