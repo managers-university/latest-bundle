@@ -1,0 +1,430 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = env("DATABASE_PROVIDER")
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Account {
+  id          String @id @default(cuid())
+
+  // Core profile data from Apify (MATCHES profile_example.json structure)
+  inputUrl    String?
+  apifyId     String? @unique @map("account_apify_id") // "id" from Apify response to avoid conflicts
+  username    String @unique
+  url         String?
+  fullName    String?
+  biography  String?
+  profilePicUrl String?
+  profilePicUrlHD String?
+  followersCount Int @default(0)
+  followsCount Int @default(0)
+  hasChannel   Boolean @default(false)
+  highlightReelCount Int @default(0)
+  isBusinessAccount Boolean @default(false)
+  joinedRecently Boolean @default(false)
+  businessCategoryName String?
+  private Boolean @default(false)
+  verified Boolean @default(false)
+  igtvVideoCount Int @default(0)
+
+  // CRITICAL: Network discovery data from Apify (MISSING BEFORE!)
+  externalUrls String? @default("[]") // JSON string of external URLs array
+  relatedProfiles String? @default("[]") // JSON string of related profiles array - MOST IMPORTANT FOR NETWORK DISCOVERY!
+
+  // Store complete Apify response as text for flexibility (SQLite doesn't support JSON)
+  profileData String @default("{}")
+
+  // Relations
+  networkAccounts NetworkAccount[]
+  creatorMetrics CreatorMetrics?
+  reels Reel[]
+}
+
+
+model Network {
+  id String @id @default(cuid())
+  name String
+  description String?
+
+  // Network scraping statistics
+  totalAccounts Int @default(0)
+  totalReelsScraped Int @default(0)
+  totalLikes Int @default(0)
+  totalComments Int @default(0)
+  totalShares Int @default(0)
+  lastScrapeAt DateTime?
+  scrapeStatus String @default("idle") // idle, active, paused, completed, error
+  progress Int @default(0) // 0-100 percentage of current job progress
+
+  // Media caching settings
+  mediaCacheEnabled Boolean @default(false) // Opt-in per network for local media caching
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  accounts NetworkAccount[]
+  reels NetworkReel[] // Many-to-many through NetworkReel
+  scheduledJobs ScheduledJob[]
+}
+
+model NetworkAccount {
+  id String @id @default(cuid())
+  accountId String
+  networkId String
+
+  // Relation to main account
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Relation to network
+  network Network @relation(fields: [networkId], references: [id], onDelete: Cascade)
+
+  // Reels scraping data
+  lastReelScrape DateTime?
+  totalReelsScraped Int @default(0)
+  scrapeStatus String @default("pending") // pending, active, completed, error
+
+  // Discovery tracking - when this account was last used as a seed for network discovery
+  relatedProfilesScrapedAt DateTime? // Marks when this account's related profiles were scraped for discovery
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  reels NetworkReel[] // Many-to-many through NetworkReel
+
+  @@unique([accountId, networkId])
+}
+
+// Join table for many-to-many relationship between Networks and Reels
+model NetworkReel {
+  id String @id @default(cuid())
+  networkId String
+  reelId String
+  networkAccountId String // Which network account this reel belongs to in this network
+  
+  network Network @relation(fields: [networkId], references: [id], onDelete: Cascade)
+  reel Reel @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  networkAccount NetworkAccount @relation(fields: [networkAccountId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  
+  @@unique([networkId, reelId])
+  @@index([networkId])
+  @@index([reelId])
+  @@index([networkAccountId])
+}
+
+// Reels model - individual reels from Apify (MATCHES reel_example.json structure)
+model Reel {
+  id String @id @default(cuid())
+  accountId String // Link to Account model
+
+  // Core reel data from Apify (MATCHES reel_example.json structure)
+  apifyId String? @unique @map("reel_apify_id") // "id" from Apify response
+  type String? // "Video", etc.
+  shortCode String? @unique @map("reel_shortcode")
+  caption String?
+  url String? // Instagram URL
+  inputUrl String? // Input URL from Apify
+
+  // Media content
+  videoUrl String?
+  displayUrl String? // Main thumbnail/display image
+
+  // Cached media paths (relative to app cache directory)
+  cachedVideoPath String? // Local cached video file path
+  cachedThumbnailPath String? // Local cached thumbnail file path
+  cacheStatus String @default("not_cached") // not_cached, caching, cached, cache_failed
+
+  // Video metadata
+  videoDuration Float?
+  dimensionsHeight Int?
+  dimensionsWidth Int?
+
+  // Engagement metrics from Apify
+  likesCount Int @default(0)
+  commentsCount Int @default(0)
+  videoViewCount Int @default(0)
+  videoPlayCount Int @default(0)
+
+  // Content features (stored as text since SQLite doesn't support JSON)
+  hashtags String? @default("[]") // JSON string of hashtag array
+  mentions String? @default("[]") // JSON string of mentions array
+  taggedUsers String? @default("[]") // JSON string of tagged users array
+  musicInfo String? @default("{}") // JSON string of music info object
+  firstComment String?
+  latestComments String? @default("[]") // JSON string of comments array
+
+  // Post metadata
+  timestamp DateTime?
+  ownerFullName String?
+  ownerUsername String?
+  ownerId String?
+  isPinned Boolean @default(false)
+  productType String?
+  isSponsored Boolean @default(false)
+  isCommentsDisabled Boolean @default(false)
+  childPosts String? @default("[]") // JSON string of child posts array
+  alt String?
+
+  // Store complete Apify response as text for flexibility (SQLite doesn't support JSON)
+  reelData String @default("{}")
+
+  // Custom metrics and analytics (preserving existing functionality)
+  // Advanced virality metrics (calculated periodically)
+  avgViewsVirality Float @default(1.0) // views vs creator average
+  accountSizeVirality Float @default(1.0) // views vs followers (1000+ base)
+  networkAvgVirality Float @default(1.0) // views vs network average
+  viewsFirstHour Int @default(0)
+  viewsFirstDay Int @default(0)
+  viewsFirstWeek Int @default(0)
+
+  // Performance metrics
+  engagementRate Float @default(0.0) // (likes + comments) / views * 100
+  isViral Boolean @default(false)
+  viralThreshold Int @default(10000) // min views to be considered viral
+
+  createdAt DateTime @default(now())
+  scrapedAt DateTime @default(now())
+  lastMetricsUpdate DateTime?
+
+  // Relations
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  networks NetworkReel[] // Many-to-many through NetworkReel
+  tags ReelTag[]
+  savedReels SavedReel[] // User bookmarks
+
+  @@index([accountId, createdAt])
+  @@index([accountId, likesCount(order: Desc)])
+  @@index([accountId, videoViewCount(order: Desc)])
+  @@index([accountId, avgViewsVirality(order: Desc)])
+  @@index([accountId, accountSizeVirality(order: Desc)])
+  @@index([accountId, isViral])
+}
+
+// ReelTag model - user-defined tags for reels (supports emojis) (MATCHES YOUR EXACTLY STRUCTURE)
+model ReelTag {
+  id String @id @default(cuid())
+  tag String @unique
+  emoji String? // Support for emoji tags like 🔥, 💰, etc.
+  color String? // Custom color for UI
+  description String?
+
+  // Relations
+  reels Reel[]
+}
+
+// CreatorTag model - tags for creator analysis (viral creators, specific niches, etc.) (MATCHES YOUR EXACTLY STRUCTURE)
+model CreatorTag {
+  id String @id @default(cuid())
+  tag String @unique
+  emoji String?
+  color String?
+  description String?
+
+  // Relations
+  creatorMetrics CreatorMetrics[]
+}
+
+// CreatorMetrics model - stores average performance of creators for virality calculations (MATCHES YOUR EXACTLY STRUCTURE)
+model CreatorMetrics {
+  id String @id @default(cuid())
+  accountId String @unique
+
+  // Rolling averages (last 30 reels performance)
+  avgViewsLast30 Int @default(0)
+  avgLikesLast30 Int @default(0)
+  avgCommentsLast30 Int @default(0)
+  avgSharesLast30 Int @default(0)
+  avgEngagementRateLast30 Float @default(0.0)
+
+  // Creator context
+  followerCount Int @default(0)
+  lastUpdated DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tags CreatorTag[]
+}
+
+// SavedReel model - bookmarked reels with cached data for resilience
+model SavedReel {
+  id String @id @default(cuid())
+  reelId String? // Optional - saved reel persists even if original reel is deleted
+
+  // Cache critical data in case original reel is deleted
+  // This ensures the saved item is still viewable even if the source network/reel is gone
+  ownerUsername String?
+  ownerFullName String?
+  shortCode String?
+  displayUrl String? // Cached thumbnail
+  videoUrl String? // Cached video URL
+  caption String?
+  hashtags String? @default("[]") // JSON string of hashtag array
+  likesCount Int @default(0)
+  commentsCount Int @default(0)
+  videoViewCount Int @default(0)
+  followersCount Int?
+  videoDuration Float?
+  timestamp DateTime?
+  engagementRate Float @default(0.0)
+  avgViewsVirality Float @default(1.0)
+  accountSizeVirality Float @default(1.0)
+
+  // Metadata
+  savedAt DateTime @default(now())
+  notes String? // User notes about why they saved it
+
+  // Relations
+  reel Reel? @relation(fields: [reelId], references: [id], onDelete: SetNull)
+  collections SavedReelCollection[] // Many-to-many through SavedReelCollection
+
+  @@index([reelId])
+  @@index([savedAt(order: Desc)])
+}
+
+// Join table for many-to-many relationship between SavedReels and SavedCollections
+model SavedReelCollection {
+  id String @id @default(cuid())
+  savedReelId String
+  collectionId String
+
+  savedReel SavedReel @relation(fields: [savedReelId], references: [id], onDelete: Cascade)
+  collection SavedCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  addedAt DateTime @default(now())
+
+  @@unique([savedReelId, collectionId])
+  @@index([savedReelId])
+  @@index([collectionId])
+}
+
+// SavedCollection model - organize saved reels into collections
+model SavedCollection {
+  id String @id @default(cuid())
+  name String
+  description String?
+  color String? // Hex color for UI customization
+  emoji String? // Optional emoji icon
+  isDefault Boolean @default(false) // Mark default "Saved Reels" collection
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  savedReels SavedReelCollection[] // Many-to-many through SavedReelCollection
+
+  @@index([createdAt(order: Desc)])
+  @@index([isDefault])
+}
+
+// MediaCache model - tracks cached media files for reels
+model MediaCache {
+  id String @id @default(cuid())
+  reelId String
+  fileType String // "video" or "thumbnail"
+  filePath String // Relative path from cache directory
+  fileSize Int @default(0) // Size in bytes
+  originalUrl String? // Original Instagram URL
+
+  cachedAt DateTime @default(now())
+  lastAccessedAt DateTime @default(now())
+
+  @@unique([reelId, fileType])
+  @@index([reelId])
+  @@index([cachedAt])
+}
+
+// AppSettings model - persistent storage for app configuration
+// Singleton pattern: only one row with id="app_settings"
+// Replaces .storage/settings.json to enable cloud persistence
+model AppSettings {
+  id String @id @default("app_settings") // Singleton - always use this ID
+
+  // API Keys
+  apifyApiKey String? // Apify API token
+
+  // License Data (stored as JSON string for compatibility)
+  licenseKey String? // License key
+  licenseData String? @default("{}") // Full license object as JSON
+
+  // User Preferences (stored as JSON string for compatibility)
+  preferences String? @default("{}") // User preferences as JSON
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ScheduledJob model - automated tasks (network scrapes, etc.)
+model ScheduledJob {
+  id String @id @default(cuid())
+
+  // Job identification
+  name String // User-friendly name like "Daily Network Scrape"
+  description String?
+
+  // Job type and target
+  jobType String // "scrape_network", "scrape_reels", "discover_profiles", etc.
+  targetId String? // Network ID or account ID depending on jobType
+
+  // Schedule configuration
+  schedule String // Cron pattern: "0 9 * * *" = 9am daily
+  timezone String @default("America/New_York") // User's timezone
+
+  // Job options (stored as JSON string for SQLite)
+  options String @default("{}") // Job-specific settings like maxDepth, profilesPerLevel, etc.
+
+  // Status and tracking
+  isActive Boolean @default(true) // Enable/disable without deleting
+  lastRunAt DateTime? // Last execution timestamp
+  nextRunAt DateTime? // Calculated next run time
+  lastRunStatus String @default("pending") // "success", "failed", "running", "pending"
+  lastRunError String? // Error message if failed
+  runCount Int @default(0) // Total times executed
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String @default("user") // Future: multi-user support
+
+  // Relations
+  network Network? @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  history ScheduledJobHistory[]
+
+  @@index([isActive])
+  @@index([jobType])
+  @@index([nextRunAt])
+}
+
+// ScheduledJobHistory model - execution logs
+model ScheduledJobHistory {
+  id String @id @default(cuid())
+  jobId String
+
+  // Execution details
+  startedAt DateTime @default(now())
+  completedAt DateTime?
+  status String // "success", "failed", "cancelled"
+  error String? // Error details if failed
+
+  // Results (stored as JSON string)
+  results String @default("{}") // Stats like profiles scraped, reels found, etc.
+
+  // Relations
+  job ScheduledJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([startedAt(order: Desc)])
+}
